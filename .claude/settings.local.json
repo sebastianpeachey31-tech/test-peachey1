@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(pip install *)",
-      "Bash(pyinstaller --onefile --noconsole --icon=assets/icon.ico --name=\"QiangGe\" main.py)",
-      "Bash(rm -rf dist build QiangGe.spec)"
-    ]
-  }
-}
