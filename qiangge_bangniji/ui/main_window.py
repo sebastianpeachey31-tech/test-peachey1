@@ -21,7 +21,8 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from db.database import (
-    init_db, EXPENSE_CATEGORIES, INCOME_CATEGORIES,
+    init_db, get_categories, get_all_category_l1,
+    add_category, update_category_name, delete_category, is_preset_category,
     add_record, get_all_records, update_record, delete_record,
     get_records_by_date_range, get_records_by_category, get_monthly_stats
 )
@@ -131,7 +132,7 @@ class MainWindow:
         self.l1_var = tk.StringVar()
         self.l1_combo = ttk.Combobox(
             left, textvariable=self.l1_var, font=('Microsoft YaHei', 10),
-            values=list(EXPENSE_CATEGORIES.keys()), state='readonly', width=20
+            values=get_all_category_l1('expense'), state='readonly', width=20
         )
         self.l1_combo.pack(fill=tk.X, pady=(0, 12))
         self.l1_var.trace('w', self._on_l1_change)
@@ -143,7 +144,13 @@ class MainWindow:
             left, textvariable=self.l2_var, font=('Microsoft YaHei', 10),
             values=[], state='readonly', width=20
         )
-        self.l2_combo.pack(fill=tk.X, pady=(0, 12))
+        self.l2_combo.pack(fill=tk.X, pady=(0, 8))
+
+        # ---- 管理分类 ----
+        ttk.Button(
+            left, text="⚙ 管理分类", width=12, bootstyle="outline-secondary",
+            command=self._open_category_manager
+        ).pack(anchor=tk.W, pady=(0, 12))
 
         # ---- 日期 ----
         ttk.Label(left, text="日期", font=('Microsoft YaHei', 10)).pack(anchor=tk.W, pady=(0, 3))
@@ -248,9 +255,10 @@ class MainWindow:
 
         # 分类筛选
         self.filter_l1_var = tk.StringVar(value="全部分类")
+        all_l1 = get_all_category_l1('expense') + get_all_category_l1('income')
         self.filter_combo = ttk.Combobox(
             filter_frame, textvariable=self.filter_l1_var,
-            values=["全部分类"] + list(EXPENSE_CATEGORIES.keys()) + list(INCOME_CATEGORIES.keys()),
+            values=["全部分类"] + all_l1,
             state='readonly', width=12, font=('Microsoft YaHei', 9)
         )
         self.filter_combo.pack(side=tk.LEFT, padx=(0, 5))
@@ -340,21 +348,362 @@ class MainWindow:
         if record_type == "expense":
             self.expense_btn.configure(bootstyle="danger")
             self.income_btn.configure(bootstyle="outline-success")
-            categories = EXPENSE_CATEGORIES
         else:
             self.expense_btn.configure(bootstyle="outline-danger")
             self.income_btn.configure(bootstyle="success")
-            categories = INCOME_CATEGORIES
 
-        # 更新 L1 下拉和清空选择
-        self.l1_combo.configure(values=list(categories.keys()))
+        # 从数据库读取最新分类，更新下拉框
+        self.l1_combo.configure(values=get_all_category_l1(record_type))
         self.l1_var.set('')
         self.l2_combo.configure(values=[])
         self.l2_var.set('')
 
     def _current_categories(self):
-        """返回当前类型的分类字典"""
-        return INCOME_CATEGORIES if self.record_type == "income" else EXPENSE_CATEGORIES
+        """返回当前类型的分类字典（从数据库读取）"""
+        return get_categories(self.record_type)
+
+    def _refresh_category_dropdowns(self):
+        """分类管理操作后，刷新主窗口所有分类相关下拉框。"""
+        self.l1_combo.configure(values=get_all_category_l1(self.record_type))
+        self._on_l1_change()
+        # 刷新筛选下拉框
+        all_l1 = get_all_category_l1('expense') + get_all_category_l1('income')
+        self.filter_combo.configure(values=["全部分类"] + all_l1)
+
+    # ================================================================
+    # 管理分类弹窗
+    # ================================================================
+
+    def _open_category_manager(self):
+        """打开管理分类弹窗"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("管理分类")
+        dialog.geometry("680x520")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # 当前查看的类型
+        view_type = tk.StringVar(value="expense")
+        # 当前选中的分类信息
+        selected_info = {"l1": None, "l2": None, "is_l1": False, "is_preset": True}
+
+        # ============ 左侧：类型切换 + 分类树 ============
+        left_frame = ttk.Frame(dialog)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(15, 5), pady=15)
+
+        # 类型切换按钮
+        toggle_frame = ttk.Frame(left_frame)
+        toggle_frame.pack(fill=tk.X, pady=(0, 8))
+
+        def on_type_switch(t):
+            view_type.set(t)
+            load_tree(t)
+            update_new_l1_combo()
+            _update_toggle_style()
+            # 清空选中
+            selected_info.update({"l1": None, "l2": None, "is_l1": False, "is_preset": True})
+            update_info_panel()
+
+        def _update_toggle_style():
+            """刷新切换按钮的高亮状态"""
+            for child in toggle_frame.winfo_children():
+                child.destroy()
+            vt = view_type.get()
+            ttk.Button(
+                toggle_frame, text="💸 支出分类", width=12,
+                bootstyle="danger" if vt == "expense" else "outline-danger",
+                command=lambda: on_type_switch("expense")
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            ttk.Button(
+                toggle_frame, text="💰 收入分类", width=12,
+                bootstyle="success" if vt == "income" else "outline-success",
+                command=lambda: on_type_switch("income")
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
+        # 首次创建切换按钮
+        _update_toggle_style()
+
+        # Treeview 分类树
+        tree_frame = ttk.Frame(left_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        tree = ttk.Treeview(tree_frame, columns=(), show='tree', selectmode='browse')
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        tree.tag_configure('preset', foreground='gray')
+        tree.tag_configure('custom', foreground='black')
+
+        def load_tree(cat_type):
+            tree.delete(*tree.get_children())
+            categories = get_categories(cat_type)
+            for l1, l2_list in categories.items():
+                # 检查该 L1 是否有预置项
+                has_preset = any(
+                    is_preset_category(cat_type, l1, l2) for l2 in l2_list
+                )
+                l1_tag = 'preset' if has_preset else 'custom'
+                l1_iid = tree.insert('', tk.END, text=l1, open=True, tags=(l1_tag,))
+                for l2 in l2_list:
+                    is_p = is_preset_category(cat_type, l1, l2)
+                    l2_tag = 'preset' if is_p else 'custom'
+                    tree.insert(l1_iid, tk.END, text=l2, tags=(l2_tag,))
+
+        # ============ 右侧：信息 + 操作 ============
+        right_frame = ttk.Frame(dialog, width=280)
+        right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 15), pady=15)
+        right_frame.pack_propagate(False)
+
+        # 选中信息
+        info_frame = ttk.LabelFrame(right_frame, text="选中分类")
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+
+        info_name_label = ttk.Label(info_frame, text="名称：未选中", font=('Microsoft YaHei', 10))
+        info_name_label.pack(anchor=tk.W, pady=(5, 2), padx=10)
+
+        info_source_label = ttk.Label(info_frame, text="", font=('Microsoft YaHei', 9))
+        info_source_label.pack(anchor=tk.W, pady=(0, 5), padx=10)
+
+        def update_info_panel():
+            l1 = selected_info.get("l1")
+            l2 = selected_info.get("l2")
+            is_l1 = selected_info.get("is_l1")
+            is_p = selected_info.get("is_preset", True)
+
+            if l1 is None:
+                info_name_label.config(text="名称：未选中")
+                info_source_label.config(text="")
+                rename_btn.config(state=tk.DISABLED)
+                delete_btn.config(state=tk.DISABLED)
+                return
+
+            if is_l1:
+                info_name_label.config(text=f"名称：{l1}（一级分类）")
+            else:
+                info_name_label.config(text=f"名称：{l1} : {l2}")
+
+            if is_p:
+                info_source_label.config(text="来源：预置分类（不可修改）", foreground='gray')
+            else:
+                info_source_label.config(text="来源：用户自定义", foreground='#27AE60')
+
+            # 根据是否预设来启用/禁用按钮
+            if is_p:
+                rename_btn.config(state=tk.DISABLED)
+                delete_btn.config(state=tk.DISABLED)
+            else:
+                rename_btn.config(state=tk.NORMAL)
+                delete_btn.config(state=tk.NORMAL)
+
+        # 操作按钮
+        action_frame = ttk.LabelFrame(right_frame, text="操作")
+        action_frame.pack(fill=tk.X, pady=(0, 10))
+
+        def do_rename():
+            l1 = selected_info.get("l1")
+            l2 = selected_info.get("l2")
+            is_l1 = selected_info.get("is_l1")
+            if not l1:
+                return
+            ct = view_type.get()
+
+            if is_l1:
+                # 修改一级分类名：弹出简单输入框
+                from tkinter import simpledialog
+                new_name = simpledialog.askstring(
+                    "修改一级分类", f"将一级分类「{l1}」重命名为：",
+                    parent=dialog, initialvalue=l1
+                )
+                if not new_name or new_name.strip() == l1:
+                    return
+                # 修改该 L1 下所有用户自定义的 L2 行
+                categories = get_categories(ct)
+                for old_l2 in categories.get(l1, []):
+                    if not is_preset_category(ct, l1, old_l2):
+                        success, msg = update_category_name(ct, l1, old_l2, new_name.strip(), old_l2)
+                        if not success:
+                            from tkinter import messagebox
+                            messagebox.showwarning("修改失败", msg, parent=dialog)
+                            return
+            else:
+                # 修改二级分类名
+                from tkinter import simpledialog
+                new_name = simpledialog.askstring(
+                    "修改二级分类", f"将二级分类「{l2}」重命名为：",
+                    parent=dialog, initialvalue=l2
+                )
+                if not new_name or new_name.strip() == l2:
+                    return
+                success, msg = update_category_name(ct, l1, l2, l1, new_name.strip())
+                if not success:
+                    from tkinter import messagebox
+                    messagebox.showwarning("修改失败", msg, parent=dialog)
+                    return
+
+            load_tree(ct)
+            update_info_panel()
+            self._refresh_category_dropdowns()
+
+        rename_btn = ttk.Button(
+            action_frame, text="✏ 修改名称", width=14,
+            bootstyle="outline-primary",
+            command=do_rename
+        )
+        rename_btn.pack(fill=tk.X, pady=(5, 3), padx=10)
+
+        def do_delete():
+            l1 = selected_info.get("l1")
+            l2 = selected_info.get("l2")
+            is_l1 = selected_info.get("is_l1")
+            if not l1:
+                return
+            ct = view_type.get()
+
+            from tkinter import messagebox
+
+            if is_l1:
+                # 删除整个一级分类（仅用户自定义的 L2）
+                categories = get_categories(ct)
+                l2_list = categories.get(l1, [])
+                user_l2s = [x for x in l2_list if not is_preset_category(ct, l1, x)]
+                if not user_l2s:
+                    messagebox.showwarning("提示", "该一级分类下没有可删除的自定义分类", parent=dialog)
+                    return
+                # 检查每个 L2 是否有记录
+                for old_l2 in user_l2s:
+                    success, msg = delete_category(ct, l1, old_l2)
+                    if not success:
+                        messagebox.showwarning("删除失败", f"「{l1}:{old_l2}」{msg}", parent=dialog)
+                        load_tree(ct)
+                        update_info_panel()
+                        return
+
+                confirm = messagebox.askyesno(
+                    "确认删除",
+                    f"确定要删除一级分类「{l1}」下的所有自定义二级分类吗？\n共 {len(user_l2s)} 个。",
+                    parent=dialog
+                )
+                if not confirm:
+                    return
+                for old_l2 in user_l2s:
+                    delete_category(ct, l1, old_l2)  # 第二次调用直接删
+            else:
+                confirm = messagebox.askyesno(
+                    "确认删除",
+                    f"确定要删除分类「{l1}:{l2}」吗？",
+                    parent=dialog
+                )
+                if not confirm:
+                    return
+                success, msg = delete_category(ct, l1, l2)
+                if not success:
+                    messagebox.showwarning("删除失败", msg, parent=dialog)
+                    return
+
+            selected_info.update({"l1": None, "l2": None, "is_l1": False, "is_preset": True})
+            load_tree(ct)
+            update_info_panel()
+            self._refresh_category_dropdowns()
+
+        delete_btn = ttk.Button(
+            action_frame, text="🗑 删除分类", width=14,
+            bootstyle="outline-danger",
+            command=do_delete
+        )
+        delete_btn.pack(fill=tk.X, pady=(3, 5), padx=10)
+
+        # 新增分类
+        add_frame = ttk.LabelFrame(right_frame, text="新增分类")
+        add_frame.pack(fill=tk.X)
+
+        ttk.Label(add_frame, text="一级分类（可选已有或输入新建）", font=('Microsoft YaHei', 9)).pack(
+            anchor=tk.W, padx=10, pady=(5, 2))
+        new_l1_var = tk.StringVar()
+        new_l1_combo = ttk.Combobox(
+            add_frame, textvariable=new_l1_var, font=('Microsoft YaHei', 10),
+            state='normal', width=18
+        )
+        new_l1_combo.pack(fill=tk.X, padx=10, pady=(0, 5))
+
+        def update_new_l1_combo():
+            new_l1_combo.configure(values=get_all_category_l1(view_type.get()))
+
+        ttk.Label(add_frame, text="二级分类", font=('Microsoft YaHei', 9)).pack(
+            anchor=tk.W, padx=10, pady=(0, 2))
+        new_l2_var = tk.StringVar()
+        new_l2_entry = ttk.Entry(add_frame, textvariable=new_l2_var, font=('Microsoft YaHei', 10), width=18)
+        new_l2_entry.pack(fill=tk.X, padx=10, pady=(0, 8))
+
+        def do_add():
+            l1 = new_l1_var.get().strip()
+            l2 = new_l2_var.get().strip()
+            if not l1:
+                from tkinter import messagebox
+                messagebox.showwarning("提示", "请输入或选择一级分类", parent=dialog)
+                return
+            if not l2:
+                from tkinter import messagebox
+                messagebox.showwarning("提示", "请输入二级分类名称", parent=dialog)
+                return
+
+            ct = view_type.get()
+            success, msg = add_category(ct, l1, l2)
+            if not success:
+                from tkinter import messagebox
+                messagebox.showwarning("新增失败", msg, parent=dialog)
+                return
+
+            new_l2_var.set('')
+            load_tree(ct)
+            update_new_l1_combo()
+            self._refresh_category_dropdowns()
+
+        ttk.Button(
+            add_frame, text="➕ 新增", width=14,
+            bootstyle="success",
+            command=do_add
+        ).pack(fill=tk.X, padx=10, pady=(0, 8))
+
+        # 树选中事件
+        def on_tree_select(event):
+            sel = tree.selection()
+            if not sel:
+                selected_info.update({"l1": None, "l2": None, "is_l1": False, "is_preset": True})
+                update_info_panel()
+                return
+
+            item = tree.item(sel[0])
+            parent = tree.parent(sel[0])
+            ct = view_type.get()
+
+            if parent == '':
+                # 选中的是一级分类节点
+                l1 = item['text']
+                is_l1 = True
+                l2 = None
+                # 检查该 L1 下是否全是预设
+                cats = get_categories(ct)
+                l2_list = cats.get(l1, [])
+                all_preset = all(is_preset_category(ct, l1, x) for x in l2_list) if l2_list else True
+                selected_info.update({"l1": l1, "l2": None, "is_l1": True, "is_preset": all_preset})
+            else:
+                # 选中的是二级分类节点
+                l1 = tree.item(parent)['text']
+                l2 = item['text']
+                is_p = is_preset_category(ct, l1, l2)
+                selected_info.update({"l1": l1, "l2": l2, "is_l1": False, "is_preset": is_p})
+
+            update_info_panel()
+
+        tree.bind('<<TreeviewSelect>>', on_tree_select)
+
+        # 初始加载
+        load_tree("expense")
+        update_new_l1_combo()
+        update_info_panel()
 
     # ================================================================
     # 数据加载与统计
@@ -603,8 +952,8 @@ class MainWindow:
         date_to = self.filter_date_to.get().strip()
 
         # 按分类筛选
-        all_expense_keys = list(EXPENSE_CATEGORIES.keys())
-        all_income_keys = list(INCOME_CATEGORIES.keys())
+        all_expense_keys = get_all_category_l1('expense')
+        all_income_keys = get_all_category_l1('income')
 
         if category and category != "全部分类":
             if category in all_expense_keys:
@@ -626,6 +975,9 @@ class MainWindow:
 
     def _reset_filter(self):
         self.filter_l1_var.set("全部分类")
+        # 刷新筛选下拉框（含用户新增的分类）
+        all_l1 = get_all_category_l1('expense') + get_all_category_l1('income')
+        self.filter_combo.configure(values=["全部分类"] + all_l1)
         self.filter_date_from.delete(0, tk.END)
         self.filter_date_from.insert(0, datetime.now().strftime("%Y-%m-01"))
         self.filter_date_to.delete(0, tk.END)

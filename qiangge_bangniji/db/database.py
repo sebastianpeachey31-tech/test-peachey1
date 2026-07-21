@@ -74,8 +74,241 @@ def init_db():
     if 'type' not in columns:
         cursor.execute("ALTER TABLE expenses ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'")
 
+    # 分类管理表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS categories (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            type        TEXT NOT NULL,
+            category_l1 TEXT NOT NULL,
+            category_l2 TEXT NOT NULL,
+            is_preset   INTEGER NOT NULL DEFAULT 0,
+            sort_order  INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+    ''')
+
     conn.commit()
     conn.close()
+
+    # 首次启动时写入预置分类种子数据
+    _seed_preset_categories()
+
+
+def _seed_preset_categories():
+    """首次运行时将硬编码的预置分类写入 categories 表。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) as cnt FROM categories')
+    if cursor.fetchone()['cnt'] > 0:
+        conn.close()
+        return
+
+    sort = 0
+    for l1, l2_list in EXPENSE_CATEGORIES.items():
+        for l2 in l2_list:
+            cursor.execute(
+                'INSERT INTO categories (type, category_l1, category_l2, is_preset, sort_order) '
+                'VALUES (?, ?, ?, 1, ?)',
+                ('expense', l1, l2, sort)
+            )
+            sort += 1
+
+    sort = 0
+    for l1, l2_list in INCOME_CATEGORIES.items():
+        for l2 in l2_list:
+            cursor.execute(
+                'INSERT INTO categories (type, category_l1, category_l2, is_preset, sort_order) '
+                'VALUES (?, ?, ?, 1, ?)',
+                ('income', l1, l2, sort)
+            )
+            sort += 1
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# 分类管理：查询、新增、改名、删除
+# ============================================================
+
+def get_categories(cat_type):
+    """返回指定类型的分类字典 {一级分类: [二级分类列表]}，按 sort_order 排序。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT category_l1, category_l2 FROM categories '
+        'WHERE type = ? ORDER BY sort_order',
+        (cat_type,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    result = {}
+    for row in rows:
+        l1 = row['category_l1']
+        if l1 not in result:
+            result[l1] = []
+        result[l1].append(row['category_l2'])
+    return result
+
+
+def get_all_category_l1(cat_type):
+    """返回指定类型的所有一级分类名称列表（用于下拉框）。"""
+    categories = get_categories(cat_type)
+    return list(categories.keys())
+
+
+def is_preset_category(cat_type, category_l1, category_l2):
+    """查询某个分类是否为预置分类。"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT is_preset FROM categories '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ?',
+        (cat_type, category_l1, category_l2)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row['is_preset']) if row else False
+
+
+def add_category(cat_type, category_l1, category_l2):
+    """新增一个用户自定义分类（is_preset=0）。返回 (True, None) 或 (False, 错误原因)。"""
+    # 不允许空名称
+    if not category_l1.strip() or not category_l2.strip():
+        return False, "分类名称不能为空"
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 检查是否重复
+    cursor.execute(
+        'SELECT COUNT(*) as cnt FROM categories '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ?',
+        (cat_type, category_l1.strip(), category_l2.strip())
+    )
+    if cursor.fetchone()['cnt'] > 0:
+        conn.close()
+        return False, "该分类已存在"
+
+    # 获取该一级分类下的最大 sort_order
+    cursor.execute(
+        'SELECT COALESCE(MAX(sort_order), -1) + 1 as next_order FROM categories '
+        'WHERE type = ? AND category_l1 = ?',
+        (cat_type, category_l1.strip())
+    )
+    next_order = cursor.fetchone()['next_order']
+
+    cursor.execute(
+        'INSERT INTO categories (type, category_l1, category_l2, is_preset, sort_order) '
+        'VALUES (?, ?, ?, 0, ?)',
+        (cat_type, category_l1.strip(), category_l2.strip(), next_order)
+    )
+    conn.commit()
+    conn.close()
+    return True, None
+
+
+def update_category_name(cat_type, old_l1, old_l2, new_l1, new_l2):
+    """
+    修改分类名称。只允许改 is_preset=0 的分类。
+    同时同步更新 expenses 表中所有匹配记录。
+    返回 (True, None) 或 (False, 错误原因)。
+    """
+    new_l1 = new_l1.strip()
+    new_l2 = new_l2.strip()
+    if not new_l1 or not new_l2:
+        return False, "分类名称不能为空"
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 验证是用户自定义分类
+    cursor.execute(
+        'SELECT is_preset FROM categories '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ?',
+        (cat_type, old_l1, old_l2)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return False, "分类不存在"
+    if row['is_preset']:
+        conn.close()
+        return False, "预置分类不可修改"
+
+    # 检查新名称是否与已有分类重复
+    if old_l1 != new_l1 or old_l2 != new_l2:
+        cursor.execute(
+            'SELECT COUNT(*) as cnt FROM categories '
+            'WHERE type = ? AND category_l1 = ? AND category_l2 = ?',
+            (cat_type, new_l1, new_l2)
+        )
+        if cursor.fetchone()['cnt'] > 0:
+            conn.close()
+            return False, "新名称与已有分类重复"
+
+    # 更新 categories 表
+    cursor.execute(
+        'UPDATE categories SET category_l1 = ?, category_l2 = ? '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ? AND is_preset = 0',
+        (new_l1, new_l2, cat_type, old_l1, old_l2)
+    )
+
+    # 同步更新 expenses 表
+    cursor.execute(
+        'UPDATE expenses SET category_l1 = ?, category_l2 = ? '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ?',
+        (new_l1, new_l2, cat_type, old_l1, old_l2)
+    )
+
+    conn.commit()
+    conn.close()
+    return True, None
+
+
+def delete_category(cat_type, category_l1, category_l2):
+    """
+    删除用户自定义分类（is_preset=0）。
+    如果有 expenses 记录在用则拒绝删除。
+    返回 (True, None) 或 (False, 错误原因)。
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 验证是用户自定义分类
+    cursor.execute(
+        'SELECT is_preset FROM categories '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ?',
+        (cat_type, category_l1, category_l2)
+    )
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return False, "分类不存在"
+    if row['is_preset']:
+        conn.close()
+        return False, "预置分类不可删除"
+
+    # 检查是否有记录在使用
+    cursor.execute(
+        'SELECT COUNT(*) as cnt FROM expenses '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ?',
+        (cat_type, category_l1, category_l2)
+    )
+    count = cursor.fetchone()['cnt']
+    if count > 0:
+        conn.close()
+        return False, f"该分类被 {count} 条记录使用，请先修改这些记录后再删除"
+
+    cursor.execute(
+        'DELETE FROM categories '
+        'WHERE type = ? AND category_l1 = ? AND category_l2 = ? AND is_preset = 0',
+        (cat_type, category_l1, category_l2)
+    )
+    conn.commit()
+    conn.close()
+    return True, None
 
 
 # ============================================================
