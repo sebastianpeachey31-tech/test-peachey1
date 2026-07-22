@@ -24,7 +24,8 @@ from db.database import (
     init_db, get_categories, get_all_category_l1,
     add_category, update_category_name, delete_category, is_preset_category,
     add_record, get_all_records, update_record, delete_record,
-    get_records_by_date_range, get_records_by_category, get_monthly_stats
+    get_records_by_date_range, get_records_by_category, get_monthly_stats,
+    format_display, parse_display
 )
 
 # 颜色常量
@@ -353,7 +354,7 @@ class MainWindow:
             self.income_btn.configure(bootstyle="success")
 
         # 从数据库读取最新分类，更新下拉框
-        self.l1_combo.configure(values=get_all_category_l1(record_type))
+        self.l1_combo.configure(values=[format_display(x) for x in get_all_category_l1(record_type)])
         self.l1_var.set('')
         self.l2_combo.configure(values=[])
         self.l2_var.set('')
@@ -364,11 +365,11 @@ class MainWindow:
 
     def _refresh_category_dropdowns(self):
         """分类管理操作后，刷新主窗口所有分类相关下拉框。"""
-        self.l1_combo.configure(values=get_all_category_l1(self.record_type))
+        self.l1_combo.configure(values=[format_display(x) for x in get_all_category_l1(self.record_type)])
         self._on_l1_change()
         # 刷新筛选下拉框
         all_l1 = get_all_category_l1('expense') + get_all_category_l1('income')
-        self.filter_combo.configure(values=["全部分类"] + all_l1)
+        self.filter_combo.configure(values=["全部分类"] + [format_display(x) for x in all_l1])
 
     # ================================================================
     # 管理分类弹窗
@@ -446,11 +447,11 @@ class MainWindow:
                     is_preset_category(cat_type, l1, l2) for l2 in l2_list
                 )
                 l1_tag = 'preset' if has_preset else 'custom'
-                l1_iid = tree.insert('', tk.END, text=l1, open=True, tags=(l1_tag,))
+                l1_iid = tree.insert('', tk.END, text=format_display(l1), open=True, tags=(l1_tag,))
                 for l2 in l2_list:
                     is_p = is_preset_category(cat_type, l1, l2)
                     l2_tag = 'preset' if is_p else 'custom'
-                    tree.insert(l1_iid, tk.END, text=l2, tags=(l2_tag,))
+                    tree.insert(l1_iid, tk.END, text=format_display(l2), tags=(l2_tag,))
 
         # ============ 右侧：信息 + 操作 ============
         right_frame = ttk.Frame(dialog, width=280)
@@ -629,7 +630,7 @@ class MainWindow:
         new_l1_combo.pack(fill=tk.X, padx=10, pady=(0, 5))
 
         def update_new_l1_combo():
-            new_l1_combo.configure(values=get_all_category_l1(view_type.get()))
+            new_l1_combo.configure(values=[format_display(x) for x in get_all_category_l1(view_type.get())])
 
         ttk.Label(add_frame, text="二级分类", font=('Microsoft YaHei', 9)).pack(
             anchor=tk.W, padx=10, pady=(0, 2))
@@ -638,7 +639,7 @@ class MainWindow:
         new_l2_entry.pack(fill=tk.X, padx=10, pady=(0, 8))
 
         def do_add():
-            l1 = new_l1_var.get().strip()
+            l1 = parse_display(new_l1_var.get()).strip()
             l2 = new_l2_var.get().strip()
             if not l1:
                 from tkinter import messagebox
@@ -681,7 +682,7 @@ class MainWindow:
 
             if parent == '':
                 # 选中的是一级分类节点
-                l1 = item['text']
+                l1 = parse_display(item['text'])
                 is_l1 = True
                 l2 = None
                 # 检查该 L1 下是否全是预设
@@ -691,8 +692,8 @@ class MainWindow:
                 selected_info.update({"l1": l1, "l2": None, "is_l1": True, "is_preset": all_preset})
             else:
                 # 选中的是二级分类节点
-                l1 = tree.item(parent)['text']
-                l2 = item['text']
+                l1 = parse_display(tree.item(parent)['text'])
+                l2 = parse_display(item['text'])
                 is_p = is_preset_category(ct, l1, l2)
                 selected_info.update({"l1": l1, "l2": l2, "is_l1": False, "is_preset": is_p})
 
@@ -719,7 +720,7 @@ class MainWindow:
 
         for rec in records:
             amount_str = f"¥{rec['amount']:.2f}"
-            category_str = f"{rec['category_l1']}:{rec['category_l2']}"
+            category_str = f"{format_display(rec['category_l1'])}:{format_display(rec['category_l2'])}"
             type_str = "💰收入" if rec['type'] == 'income' else "💸支出"
             tag = rec['type']
 
@@ -758,6 +759,9 @@ class MainWindow:
 
     def _draw_pie_chart(self, stats):
         """绘制本月支出分类占比饼图"""
+        import matplotlib.cm as cm
+        import numpy as np
+
         self.chart_ax.clear()
         self.chart_ax.set_facecolor('#f0f0f0')
 
@@ -768,14 +772,41 @@ class MainWindow:
             self.chart_ax.set_xticks([])
             self.chart_ax.set_yticks([])
         else:
-            labels = [d['category'] for d in expense_data]
-            sizes = [d['amount'] for d in expense_data]
-            colors = ['#3498DB', '#E74C3C', '#2ECC71', '#F39C12', '#9B59B6',
-                      '#1ABC9C', '#E67E22', '#2980B9', '#C0392B', '#27AE60', '#8E44AD']
+            total = sum(d['amount'] for d in expense_data)
+
+            # 占比 < 2% 的小分类合并为"其他"，避免标签堆叠看不清
+            threshold = 0.02
+            main_data = []
+            other_amount = 0
+            for d in expense_data:
+                pct = d['amount'] / total if total > 0 else 0
+                if pct >= threshold:
+                    main_data.append(d)
+                else:
+                    other_amount += d['amount']
+
+            if other_amount > 0:
+                main_data.append({'category': '其他', 'amount': other_amount})
+
+            labels = [d['category'] for d in main_data]
+            sizes = [d['amount'] for d in main_data]
+
+            # 用 colormap 自动生成颜色，不限制分类数量
+            color_norm = len(labels) if len(labels) > 1 else 2
+            colors = [cm.Set3(i / color_norm) for i in range(len(labels))]
+
+            # 自定义百分比显示：<1% 的显示为 "<1%" 而不是 "0.0%"
+            def make_autopct(sizes):
+                total_sum = sum(sizes)
+                def autopct(pct):
+                    if pct < 1:
+                        return '<1%'
+                    return f'{pct:.1f}%'
+                return autopct
 
             wedges, texts, autotexts = self.chart_ax.pie(
-                sizes, labels=labels, autopct='%1.1f%%',
-                colors=colors[:len(labels)],
+                sizes, labels=labels, autopct=make_autopct(sizes),
+                colors=colors,
                 startangle=90, pctdistance=0.75,
                 textprops={'fontsize': 8}
             )
@@ -792,10 +823,10 @@ class MainWindow:
 
     def _on_l1_change(self, *args):
         """一级分类变化时，更新二级分类选项"""
-        l1 = self.l1_var.get()
+        l1 = parse_display(self.l1_var.get())
         categories = self._current_categories()
         if l1 in categories:
-            self.l2_combo.configure(values=categories[l1])
+            self.l2_combo.configure(values=[format_display(x) for x in categories[l1]])
             self.l2_var.set('')
         else:
             self.l2_combo.configure(values=[])
@@ -848,12 +879,12 @@ class MainWindow:
             self._show_warning("请输入有效的金额数字")
             return
 
-        category_l1 = self.l1_var.get()
+        category_l1 = parse_display(self.l1_var.get())
         if not category_l1:
             self._show_warning("请选择一级分类")
             return
 
-        category_l2 = self.l2_var.get()
+        category_l2 = parse_display(self.l2_var.get())
         if not category_l2:
             self._show_warning("请选择二级分类")
             return
@@ -923,9 +954,9 @@ class MainWindow:
 
         # 填入表单
         self.amount_var.set(str(record['amount']))
-        self.l1_var.set(record['category_l1'])
+        self.l1_var.set(format_display(record['category_l1']))
         self._on_l1_change()
-        self.l2_var.set(record['category_l2'])
+        self.l2_var.set(format_display(record['category_l2']))
         self.date_var.set(record['date'])
         self.note_var.set(record['note'] or '')
 
@@ -947,7 +978,7 @@ class MainWindow:
             self.context_menu.post(event.x_root, event.y_root)
 
     def _apply_filter(self):
-        category = self.filter_l1_var.get()
+        category = parse_display(self.filter_l1_var.get())
         date_from = self.filter_date_from.get().strip()
         date_to = self.filter_date_to.get().strip()
 
@@ -977,7 +1008,7 @@ class MainWindow:
         self.filter_l1_var.set("全部分类")
         # 刷新筛选下拉框（含用户新增的分类）
         all_l1 = get_all_category_l1('expense') + get_all_category_l1('income')
-        self.filter_combo.configure(values=["全部分类"] + all_l1)
+        self.filter_combo.configure(values=["全部分类"] + [format_display(x) for x in all_l1])
         self.filter_date_from.delete(0, tk.END)
         self.filter_date_from.insert(0, datetime.now().strftime("%Y-%m-01"))
         self.filter_date_to.delete(0, tk.END)
