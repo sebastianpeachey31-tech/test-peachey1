@@ -12,6 +12,7 @@ import sys
 # matplotlib 用于饼图
 import matplotlib
 matplotlib.use('TkAgg')
+from matplotlib import cm
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 # 设置中文字体
@@ -23,10 +24,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from db.database import (
     init_db, get_categories, get_all_category_l1,
     add_category, update_category_name, delete_category, is_preset_category,
-    add_record, get_all_records, update_record, delete_record,
+    add_record, get_all_records, get_record_by_id, update_record, delete_record,
     get_records_by_date_range, get_records_by_category, get_monthly_stats,
     format_display, parse_display
 )
+from ui.snake_game import SnakeGame
 
 # 颜色常量
 COLOR_EXPENSE = '#E74C3C'   # 支出红
@@ -53,6 +55,9 @@ class MainWindow:
         # 构建界面
         self._build_ui()
 
+        # 贪吃蛇游戏（延迟构建，节约启动资源）
+        self.snake_game = None
+
         # 加载数据
         self._load_records()
         self._update_stats()
@@ -78,6 +83,12 @@ class MainWindow:
             title_bar, text="每一笔，强哥都帮你记着",
             font=('Microsoft YaHei', 9), bootstyle="secondary"
         ).pack(side=tk.LEFT, padx=(15, 0))
+
+        # 贪吃蛇入口
+        ttk.Button(
+            title_bar, text="🐍 贪吃蛇", width=12, bootstyle="outline-warning",
+            command=self._show_snake_game
+        ).pack(side=tk.RIGHT)
 
         # ---- 主体区域 ----
         main_frame = ttk.Frame(self.root)
@@ -133,7 +144,8 @@ class MainWindow:
         self.l1_var = tk.StringVar()
         self.l1_combo = ttk.Combobox(
             left, textvariable=self.l1_var, font=('Microsoft YaHei', 10),
-            values=get_all_category_l1('expense'), state='readonly', width=20
+            values=[format_display(x) for x in get_all_category_l1('expense')],
+            state='readonly', width=20
         )
         self.l1_combo.pack(fill=tk.X, pady=(0, 12))
         self.l1_var.trace('w', self._on_l1_change)
@@ -196,11 +208,15 @@ class MainWindow:
 
     def _build_right_panel(self, parent):
         """构建右侧统计 + 列表"""
-        right = ttk.Frame(parent)
-        right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        self.right_panel = ttk.Frame(parent)
+        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        # ---- 记账功能容器（统计 + 筛选 + 列表）----
+        self.right_accounting = ttk.Frame(self.right_panel)
+        self.right_accounting.pack(fill=tk.BOTH, expand=True)
 
         # ============ 统计卡片 ============
-        stats_frame = ttk.Frame(right)
+        stats_frame = ttk.Frame(self.right_accounting)
         stats_frame.pack(fill=tk.X, pady=(0, 10))
 
         # 支出卡片
@@ -240,7 +256,7 @@ class MainWindow:
         self.stats_count_label.pack()
 
         # ============ 饼图 ============
-        chart_frame = ttk.Frame(right)
+        chart_frame = ttk.Frame(self.right_accounting)
         chart_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
         self.chart_fig = Figure(figsize=(4, 2.2), dpi=80, facecolor='#f0f0f0')
@@ -249,14 +265,15 @@ class MainWindow:
         self.chart_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # ============ 筛选栏 ============
-        filter_frame = ttk.Frame(right)
+        filter_frame = ttk.Frame(self.right_accounting)
         filter_frame.pack(fill=tk.X, pady=(0, 8))
 
         ttk.Label(filter_frame, text="筛选:", font=('Microsoft YaHei', 9)).pack(side=tk.LEFT, padx=(0, 5))
 
         # 分类筛选
         self.filter_l1_var = tk.StringVar(value="全部分类")
-        all_l1 = get_all_category_l1('expense') + get_all_category_l1('income')
+        all_l1 = [format_display(x) for x in
+                  get_all_category_l1('expense') + get_all_category_l1('income')]
         self.filter_combo = ttk.Combobox(
             filter_frame, textvariable=self.filter_l1_var,
             values=["全部分类"] + all_l1,
@@ -292,7 +309,7 @@ class MainWindow:
         ).pack(side=tk.RIGHT)
 
         # ============ 记录列表 ============
-        list_frame = ttk.LabelFrame(right, text="📋 账单明细")
+        list_frame = ttk.LabelFrame(self.right_accounting, text="📋 账单明细")
         list_frame.pack(fill=tk.BOTH, expand=True)
 
         columns = ('date', 'type', 'category', 'amount', 'note')
@@ -337,6 +354,27 @@ class MainWindow:
         self.context_menu.add_separator()
         self.context_menu.add_command(label="🗑 删除", command=self._delete_selected)
         self.tree.bind('<Button-3>', self._show_context_menu)
+
+    # ================================================================
+    # 记账 / 贪吃蛇 切换
+    # ================================================================
+
+    def _show_snake_game(self):
+        """切换到贪吃蛇游戏（首次调用时延迟构建）"""
+        if self.snake_game is None:
+            self.snake_game = SnakeGame(
+                self.right_panel, on_back=self._show_accounting
+            )
+        self.right_accounting.pack_forget()
+        self.snake_game.pack(fill=tk.BOTH, expand=True)
+        self.snake_game.activate()
+
+    def _show_accounting(self):
+        """切换回记账界面"""
+        if self.snake_game is not None:
+            self.snake_game.deactivate()
+            self.snake_game.pack_forget()
+        self.right_accounting.pack(fill=tk.BOTH, expand=True)
 
     # ================================================================
     # 收支类型切换
@@ -482,9 +520,9 @@ class MainWindow:
                 return
 
             if is_l1:
-                info_name_label.config(text=f"名称：{l1}（一级分类）")
+                info_name_label.config(text=f"名称：{format_display(l1)}（一级分类）")
             else:
-                info_name_label.config(text=f"名称：{l1} : {l2}")
+                info_name_label.config(text=f"名称：{format_display(l1)} : {format_display(l2)}")
 
             if is_p:
                 info_source_label.config(text="来源：预置分类（不可修改）", foreground='gray')
@@ -718,6 +756,9 @@ class MainWindow:
         if records is None:
             records = get_all_records()
 
+        # 缓存当前显示的记录，供 _sort_by 使用
+        self._current_records = records
+
         for rec in records:
             amount_str = f"¥{rec['amount']:.2f}"
             category_str = f"{format_display(rec['category_l1'])}:{format_display(rec['category_l2'])}"
@@ -759,9 +800,6 @@ class MainWindow:
 
     def _draw_pie_chart(self, stats):
         """绘制本月支出分类占比饼图"""
-        import matplotlib.cm as cm
-        import numpy as np
-
         self.chart_ax.clear()
         self.chart_ax.set_facecolor('#f0f0f0')
 
@@ -774,7 +812,7 @@ class MainWindow:
         else:
             total = sum(d['amount'] for d in expense_data)
 
-            # 占比 < 2% 的小分类合并为"其他"，避免标签堆叠看不清
+            # 占比 < 2% 的小分类合并为"其他小分类"，避免标签堆叠看不清
             threshold = 0.02
             main_data = []
             other_amount = 0
@@ -786,33 +824,30 @@ class MainWindow:
                     other_amount += d['amount']
 
             if other_amount > 0:
-                main_data.append({'category': '其他', 'amount': other_amount})
+                main_data.append({'category': '其他小分类', 'amount': other_amount})
 
-            labels = [d['category'] for d in main_data]
+            # 标签加 emoji
+            labels = [format_display(d['category']) for d in main_data]
             sizes = [d['amount'] for d in main_data]
 
-            # 用 colormap 自动生成颜色，不限制分类数量
+            # 用 colormap 自动生成颜色
             color_norm = len(labels) if len(labels) > 1 else 2
             colors = [cm.Set3(i / color_norm) for i in range(len(labels))]
 
-            # 自定义百分比显示：<1% 的显示为 "<1%" 而不是 "0.0%"
-            def make_autopct(sizes):
-                total_sum = sum(sizes)
-                def autopct(pct):
-                    if pct < 1:
-                        return '<1%'
-                    return f'{pct:.1f}%'
-                return autopct
+            # <1% 的显示为 "<1%" 而不是 "0.0%"
+            def autopct(pct):
+                return '<1%' if pct < 1 else f'{pct:.1f}%'
 
             wedges, texts, autotexts = self.chart_ax.pie(
-                sizes, labels=labels, autopct=make_autopct(sizes),
+                sizes, labels=labels, autopct=autopct,
                 colors=colors,
                 startangle=90, pctdistance=0.75,
                 textprops={'fontsize': 8}
             )
+            # Set3 是浅色系，用深色文字更可读
             for t in autotexts:
                 t.set_fontsize(7)
-                t.set_color('white')
+                t.set_color('#333333')
 
         self.chart_fig.tight_layout(pad=0.5)
         self.chart_canvas.draw()
@@ -943,8 +978,7 @@ class MainWindow:
             return
 
         record_id = int(selected[0])
-        records = get_all_records()
-        record = next((r for r in records if r['id'] == record_id), None)
+        record = get_record_by_id(record_id)
         if not record:
             return
 
@@ -1016,7 +1050,8 @@ class MainWindow:
         self._load_records()
 
     def _sort_by(self, column):
-        records = get_all_records()
+        # 对当前已缓存的记录排序（保留筛选状态）
+        records = getattr(self, '_current_records', None) or get_all_records()
         if column == 'amount':
             records.sort(key=lambda r: r['amount'])
         else:

@@ -37,8 +37,6 @@ INCOME_CATEGORIES = {
     "其他收入": ["退款报销", "意外之财", "其他"],
 }
 
-# 默认分类（用于向后兼容的引用）
-CATEGORIES = EXPENSE_CATEGORIES
 
 # ============================================================
 # 分类图标（emoji 表情映射）
@@ -80,11 +78,6 @@ CATEGORY_ICON = {
 }
 
 
-def get_icon(category_name):
-    """返回分类对应的 emoji 图标，没有则返回默认图标 📌"""
-    return CATEGORY_ICON.get(category_name, "📌")
-
-
 def format_display(category_name):
     """将分类名格式化为带 emoji 的显示名称，如 '🍽️ 餐饮'"""
     icon = CATEGORY_ICON.get(category_name, "📌")
@@ -92,11 +85,14 @@ def format_display(category_name):
 
 
 def parse_display(display_text):
-    """从带 emoji 的显示名称中提取原始分类名，如 '🍽️ 餐饮' -> '餐饮'"""
-    for i, ch in enumerate(display_text):
-        if ch.isascii() or '一' <= ch <= '鿿':
-            return display_text[i:].lstrip()
-    return display_text
+    """从带 emoji 的显示名称中提取原始分类名，如 '🍽️ 餐饮' -> '餐饮'
+
+    format_display 的格式是固定的：'{emoji} {name}'，emoji 和名称之间
+    有一个空格。所以只需要按空格分割并取后半部分即可。
+    不依赖 Unicode 范围判断，兼容所有语言字符。
+    """
+    parts = display_text.split(' ', 1)
+    return parts[1] if len(parts) > 1 else display_text
 
 
 def get_connection():
@@ -388,12 +384,12 @@ def add_record(amount, category_l1, category_l2, date, note="", record_type="exp
     return record_id
 
 
-# 兼容旧接口
-add_expense = add_record
-
-
 def get_all_records(order="date DESC"):
     """获取所有记录，默认按日期倒序。"""
+    # 只允许安全的排序字段，防 SQL 注入
+    ALLOWED_ORDERS = {"date ASC", "date DESC", "amount ASC", "amount DESC"}
+    if order not in ALLOWED_ORDERS:
+        raise ValueError(f"无效的排序参数: {order}")
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(f'SELECT * FROM expenses ORDER BY {order}')
@@ -401,8 +397,6 @@ def get_all_records(order="date DESC"):
     conn.close()
     return [dict(row) for row in rows]
 
-
-get_all_expenses = get_all_records
 
 
 def get_record_by_id(record_id):
@@ -413,9 +407,6 @@ def get_record_by_id(record_id):
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
-
-
-get_expense_by_id = get_record_by_id
 
 
 def update_record(record_id, amount, category_l1, category_l2, date, note="", record_type="expense"):
@@ -432,7 +423,6 @@ def update_record(record_id, amount, category_l1, category_l2, date, note="", re
     conn.close()
 
 
-update_expense = update_record
 
 
 def delete_record(record_id):
@@ -444,7 +434,6 @@ def delete_record(record_id):
     conn.close()
 
 
-delete_expense = delete_record
 
 
 def get_records_by_date_range(start_date, end_date, record_type=None):
@@ -466,7 +455,6 @@ def get_records_by_date_range(start_date, end_date, record_type=None):
     return [dict(row) for row in rows]
 
 
-get_expenses_by_date_range = get_records_by_date_range
 
 
 def get_records_by_category(category_l1, category_l2=None, record_type=None):
@@ -491,7 +479,6 @@ def get_records_by_category(category_l1, category_l2=None, record_type=None):
     return [dict(row) for row in rows]
 
 
-get_expenses_by_category = get_records_by_category
 
 
 def get_monthly_stats(year, month):
