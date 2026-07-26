@@ -9,14 +9,16 @@ from datetime import datetime
 import os
 import sys
 
-# matplotlib 用于饼图
+# matplotlib 是一个画图库，这里用它来画饼图（支出分类占比）
 import matplotlib
+# TkAgg 是 matplotlib 的"Tkinter 模式"——让图表能嵌入到 Tkinter 窗口里
 matplotlib.use('TkAgg')
-from matplotlib import cm
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-# 设置中文字体
+from matplotlib import cm                           # cm = colormap，自动配色方案
+from matplotlib.figure import Figure                # Figure = 一张画布
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # 把画布变成 Tkinter 组件
+# 设置中文字体，否则饼图里的中文会变成方框
 matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei']
+# 让负号能正常显示（不设置的话负号也会变方框）
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -435,6 +437,7 @@ class MainWindow:
         toggle_frame.pack(fill=tk.X, pady=(0, 8))
 
         def on_type_switch(t):
+            """切换支出/收入分类视图。"""
             view_type.set(t)
             load_tree(t)
             update_new_l1_combo()
@@ -477,6 +480,7 @@ class MainWindow:
         tree.tag_configure('custom', foreground='black')
 
         def load_tree(cat_type):
+            """加载分类树：从数据库读取指定类型的所有分类，填到树形列表里。"""
             tree.delete(*tree.get_children())
             categories = get_categories(cat_type)
             for l1, l2_list in categories.items():
@@ -507,6 +511,7 @@ class MainWindow:
         info_source_label.pack(anchor=tk.W, pady=(0, 5), padx=10)
 
         def update_info_panel():
+            """刷新右侧信息面板：显示当前选中的分类名、来源、是否可修改。"""
             l1 = selected_info.get("l1")
             l2 = selected_info.get("l2")
             is_l1 = selected_info.get("is_l1")
@@ -542,6 +547,7 @@ class MainWindow:
         action_frame.pack(fill=tk.X, pady=(0, 10))
 
         def do_rename():
+            """重命名当前选中的分类（一级或二级），弹输入框让用户输入新名称。"""
             l1 = selected_info.get("l1")
             l2 = selected_info.get("l2")
             is_l1 = selected_info.get("is_l1")
@@ -594,6 +600,7 @@ class MainWindow:
         rename_btn.pack(fill=tk.X, pady=(5, 3), padx=10)
 
         def do_delete():
+            """删除当前选中的用户自定义分类（预置分类不可删）。"""
             l1 = selected_info.get("l1")
             l2 = selected_info.get("l2")
             is_l1 = selected_info.get("is_l1")
@@ -668,6 +675,7 @@ class MainWindow:
         new_l1_combo.pack(fill=tk.X, padx=10, pady=(0, 5))
 
         def update_new_l1_combo():
+            """刷新"新增分类"区域的一级分类下拉列表。"""
             new_l1_combo.configure(values=[format_display(x) for x in get_all_category_l1(view_type.get())])
 
         ttk.Label(add_frame, text="二级分类", font=('Microsoft YaHei', 9)).pack(
@@ -677,6 +685,7 @@ class MainWindow:
         new_l2_entry.pack(fill=tk.X, padx=10, pady=(0, 8))
 
         def do_add():
+            """新增一个用户自定义分类（可从下拉选已有一级或输入新一级）。"""
             l1 = parse_display(new_l1_var.get()).strip()
             l2 = new_l2_var.get().strip()
             if not l1:
@@ -708,6 +717,7 @@ class MainWindow:
 
         # 树选中事件
         def on_tree_select(event):
+            """树节点被点击时，记录当前选中的分类信息（一级还是二级、是否预置）。"""
             sel = tree.selection()
             if not sel:
                 selected_info.update({"l1": None, "l2": None, "is_l1": False, "is_preset": True})
@@ -947,6 +957,7 @@ class MainWindow:
         messagebox.showwarning("提示", msg)
 
     def _delete_selected(self):
+        """删除表格中当前选中的那一条记录（弹出确认框）。"""
         selected = self.tree.selection()
         if not selected:
             from tkinter import messagebox
@@ -971,6 +982,7 @@ class MainWindow:
             self._load_records()
 
     def _edit_selected(self):
+        """把选中的记录加载到左侧表单，进入编辑模式。"""
         selected = self.tree.selection()
         if not selected:
             from tkinter import messagebox
@@ -1003,15 +1015,18 @@ class MainWindow:
     # ================================================================
 
     def _on_double_click(self, event):
+        """双击表格行 → 进入编辑模式。"""
         self._edit_selected()
 
     def _show_context_menu(self, event):
+        """右键点击表格行 → 弹出菜单（修改/删除）。"""
         item = self.tree.identify_row(event.y)
         if item:
             self.tree.selection_set(item)
             self.context_menu.post(event.x_root, event.y_root)
 
     def _apply_filter(self):
+        """根据筛选条件（分类 + 日期范围）重新加载表格数据。"""
         category = parse_display(self.filter_l1_var.get())
         date_from = self.filter_date_from.get().strip()
         date_to = self.filter_date_to.get().strip()
@@ -1039,6 +1054,7 @@ class MainWindow:
         self._load_records(records)
 
     def _reset_filter(self):
+        """重置筛选条件为默认值，显示全部记录。"""
         self.filter_l1_var.set("全部分类")
         # 刷新筛选下拉框（含用户新增的分类）
         all_l1 = get_all_category_l1('expense') + get_all_category_l1('income')
@@ -1050,6 +1066,7 @@ class MainWindow:
         self._load_records()
 
     def _sort_by(self, column):
+        """点击表头时按该列排序（日期或金额），保留筛选状态。"""
         # 对当前已缓存的记录排序（保留筛选状态）
         records = getattr(self, '_current_records', None) or get_all_records()
         if column == 'amount':
@@ -1063,6 +1080,7 @@ class MainWindow:
     # ================================================================
 
     def _export_excel(self):
+        """把当前所有记录导出为 Excel 文件。"""
         from utils.export import export_to_excel
         from tkinter import messagebox
         records = get_all_records()
@@ -1070,4 +1088,6 @@ class MainWindow:
             messagebox.showinfo("提示", "没有可导出的记录")
             return
         filepath = export_to_excel(records)
-        messagebox.showinfo("导出成功", f"已导出到：\n{filepath}")
+        # 只显示文件名，不暴露用户电脑的完整路径（录屏/直播时防隐私泄露）
+        filename = os.path.basename(filepath)
+        messagebox.showinfo("导出成功", f"文件已保存：\n{filename}\n\n（保存在程序所在目录）")
